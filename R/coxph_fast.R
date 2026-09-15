@@ -74,8 +74,21 @@
 #'   level for the Wald interval. Defaults to 0.95.
 #' @param presorted A logical value. If \code{TRUE}, \code{time},
 #'   \code{event}, and \code{group} are assumed to be already sorted in
-#'   ascending order of \code{time}, and the internal \code{order()} call is
-#'   skipped. If \code{FALSE} (default), sorting is handled internally.
+#'   ascending order of \code{time} (or, when \code{strata} is supplied, by
+#'   \code{strata} first and then by ascending \code{time} within stratum),
+#'   and the internal \code{order()} call is skipped. If \code{FALSE}
+#'   (default), sorting is handled internally.
+#' @param strata An optional vector of stratum labels aligned with
+#'   \code{time}. If \code{NULL} (default), the ordinary two-group PiHE
+#'   hazard ratio is computed and behavior is identical to earlier versions
+#'   of this function. If supplied, a stratified hazard ratio is computed:
+#'   at-risk sets are formed within each stratum only, the observed and
+#'   expected event totals used for the Pike anchor are summed across
+#'   strata, and the Breslow score, information, and curvature terms used
+#'   for the Halley correction are accumulated within each stratum's own
+#'   risk sets and summed across strata. This matches
+#'   \code{\link[survival]{coxph}} with a \code{strata()} term. Any type
+#'   that supports equality comparison is accepted.
 #'
 #' @return An object of class \code{"coxph_fast"}, which is a named numeric
 #'   vector of length 5 with elements matching the column names of
@@ -143,7 +156,7 @@
 #' @importFrom stats qnorm setNames
 #' @export
 coxph_fast <- function(time, event, group, control, side = 2,
-                       conf.level = 0.95, presorted = FALSE) {
+                       conf.level = 0.95, presorted = FALSE, strata = NULL) {
 
   if (!side %in% c(1L, 2L)) {
     stop("'side' must be either 1 (one-sided) or 2 (two-sided)")
@@ -163,6 +176,9 @@ coxph_fast <- function(time, event, group, control, side = 2,
   if (length(event) != n || length(group) != n) {
     stop("'time', 'event', and 'group' must have the same length")
   }
+  if (!is.null(strata) && length(strata) != n) {
+    stop("'strata' must have the same length as 'time'")
+  }
   if (n == 0L || sum(event) == 0L) {
     return(structure(na_out, conf.level = conf.level, side = side,
                      control = control, class = "coxph_fast"))
@@ -172,9 +188,20 @@ coxph_fast <- function(time, event, group, control, side = 2,
   if (is.factor(group)) group <- as.character(group)
   j <- as.integer(group != control)
 
-  # Sort by time when not presorted
+  use_strata <- !is.null(strata)
+  if (use_strata) {
+    # Map stratum labels to contiguous integers 1..S
+    strata_int <- match(strata, sort(unique(strata)))
+  }
+
+  # Sort by time (or by strata then time) when not presorted
   if (!presorted) {
-    ord   <- order(time)
+    if (use_strata) {
+      ord        <- order(strata_int, time)
+      strata_int <- strata_int[ord]
+    } else {
+      ord <- order(time)
+    }
     time  <- time[ord]
     event <- as.integer(event[ord])
     j     <- j[ord]
@@ -182,8 +209,9 @@ coxph_fast <- function(time, event, group, control, side = 2,
     event <- as.integer(event)
   }
 
-  # C++ core: single scan over pooled sorted data -> c(theta_0, U_0, I_0, J_0)
-  res <- pihe_core(time, event, j)
+  # C++ core: single scan over (strata-)sorted data -> c(theta_0, U_0, I_0, J_0)
+  strata_arg <- if (use_strata) strata_int else integer(0)
+  res <- pihe_core(time, event, j, strata_arg)
 
   if (anyNA(res)) {
     return(structure(na_out, conf.level = conf.level, side = side,

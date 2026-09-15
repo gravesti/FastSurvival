@@ -11,7 +11,8 @@ coxph_fast(
   control,
   side = 2,
   conf.level = 0.95,
-  presorted = FALSE
+  presorted = FALSE,
+  strata = NULL
 )
 }
 \arguments{
@@ -38,8 +39,22 @@ level for the Wald interval. Defaults to 0.95.}
 
 \item{presorted}{A logical value. If \code{TRUE}, \code{time},
 \code{event}, and \code{group} are assumed to be already sorted in
-ascending order of \code{time}, and the internal \code{order()} call is
-skipped. If \code{FALSE} (default), sorting is handled internally.}
+ascending order of \code{time} (or, when \code{strata} is supplied, by
+\code{strata} first and then by ascending \code{time} within stratum),
+and the internal \code{order()} call is skipped. If \code{FALSE}
+(default), sorting is handled internally.}
+
+\item{strata}{An optional vector of stratum labels aligned with
+\code{time}. If \code{NULL} (default), the ordinary two-group PiHE
+hazard ratio is computed and behavior is identical to earlier versions
+of this function. If supplied, a stratified hazard ratio is computed:
+at-risk sets are formed within each stratum only, the observed and
+expected event totals used for the Pike anchor are summed across
+strata, and the Breslow score, information, and curvature terms used
+for the Halley correction are accumulated within each stratum's own
+risk sets and summed across strata. This matches
+\code{\link[survival]{coxph}} with a \code{strata()} term. Any type
+that supports equality comparison is accepted.}
 }
 \value{
 An object of class \code{"coxph_fast"}, which is a named numeric

@@ -4,17 +4,21 @@
 \alias{pihe_core}
 \title{Core PiHE hazard ratio computation (C++ backend)}
 \usage{
-pihe_core(time_sorted, event_sorted, j_sorted)
+pihe_core(time_sorted, event_sorted, j_sorted, strata_sorted)
 }
 \arguments{
 \item{time_sorted}{A numeric vector of pooled follow-up times sorted in
-ascending order.}
+ascending order (within stratum, when \code{strata_sorted} is given).}
 
 \item{event_sorted}{An integer vector of event indicators (1 = event,
 0 = censored), aligned with \code{time_sorted}.}
 
 \item{j_sorted}{An integer vector of group indicators (1 = treatment,
 0 = control), aligned with \code{time_sorted}.}
+
+\item{strata_sorted}{An integer vector of stratum codes aligned with
+\code{time_sorted}, assumed sorted so that rows sharing a stratum are
+contiguous. Pass a zero-length vector to indicate no stratification.}
 }
 \value{
 A numeric vector of length 4: \code{c(theta_0, U_0, I_0, J_0)}.
@@ -35,5 +39,12 @@ single struct array (better cache locality than four parallel vectors)
 with a single \code{reserve(n)} call (no event-count prepass over the
 input). Pass 2 walks the saved summaries once at the Pike anchor
 theta_0 to compute U_0, I_0, and J_0.
+
+When \code{strata_sorted} is supplied (non-empty), the data are assumed
+sorted by \code{(strata_sorted, time_sorted)}: Pass 1 resets the at-risk
+counts at each stratum boundary so that risk sets never cross strata,
+while \code{O_T}, \code{O_C}, \code{E_T}, \code{E_C} keep accumulating
+across strata, giving the pooled Pike anchor. Pass 2 is unaffected, since
+the saved per-event summaries are already stratum-local.
 }
 \keyword{internal}

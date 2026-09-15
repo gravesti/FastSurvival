@@ -121,3 +121,85 @@ test_that("coxph_fast stops when input lengths differ", {
     "same length"
   )
 })
+
+test_that("coxph_fast stratified agrees with coxph + strata() (tolerance 1e-4)", {
+  skip_if_not_installed("survival")
+  set.seed(4821)
+  n <- 300
+  strat  <- sample(1:3, n, replace = TRUE)
+  group  <- sample(c("A", "B"), n, replace = TRUE)
+  strata_haz <- c(1, 1.8, 0.6)[strat]
+  time_true  <- rexp(n, rate = strata_haz * exp(0.5 * (group == "B")))
+  cens       <- rexp(n, rate = 0.3)
+  event      <- as.integer(time_true <= cens)
+  time       <- pmin(time_true, cens)
+
+  res <- coxph_fast(time, event, group, control = "A", strata = strat)
+
+  fit <- survival::coxph(
+    survival::Surv(time, event) ~ I(group != "A") + survival::strata(strat),
+    ties    = "breslow",
+    control = survival::coxph.control(
+      eps        = 1e-12,
+      toler.chol = .Machine$double.eps^0.875
+    )
+  )
+  hr_cox <- unname(exp(stats::coef(fit)[1L]))
+
+  expect_equal(unname(res["exp(coef)"]), hr_cox, tolerance = 1e-4)
+})
+
+test_that("coxph_fast single stratum reduces to unstratified", {
+  set.seed(9)
+  n     <- 100
+  time  <- c(rexp(n / 2, 0.1), rexp(n / 2, 0.15))
+  event <- rep(1L, n)
+  group <- rep(c(1L, 2L), each = n / 2)
+
+  res_strat <- coxph_fast(time, event, group, control = 1,
+                          strata = rep(1L, n))
+  res_uns   <- coxph_fast(time, event, group, control = 1)
+
+  expect_equal(unname(res_strat), unname(res_uns), tolerance = 1e-12)
+})
+
+test_that("coxph_fast stratified presorted=TRUE and presorted=FALSE agree", {
+  set.seed(10)
+  n      <- 150
+  strata <- sample(1:3, n, replace = TRUE)
+  time   <- c(rexp(n / 2, 0.1), rexp(n / 2, 0.15))
+  event  <- rep(1L, n)
+  group  <- rep(c(1L, 2L), each = n / 2)
+
+  res_uns <- coxph_fast(time, event, group, control = 1, strata = strata)
+
+  ord <- order(strata, time)
+  res_pre <- coxph_fast(time[ord], event[ord], group[ord], control = 1,
+                        strata = strata[ord], presorted = TRUE)
+
+  expect_equal(unname(res_pre), unname(res_uns), tolerance = 1e-12)
+})
+
+test_that("coxph_fast handles a stratum with only one group", {
+  # Stratum 2 contains only group 1 subjects; should not error and should
+  # contribute zero events/expectation from that stratum, matching the
+  # convention used by the stratified log-rank implementation.
+  set.seed(11)
+  n1     <- 80
+  n2     <- 20
+  time   <- c(rexp(n1, 0.1), rexp(n1, 0.15), rexp(n2, 0.2))
+  event  <- rep(1L, n1 * 2 + n2)
+  group  <- c(rep(1L, n1), rep(2L, n1), rep(1L, n2))
+  strata <- c(rep(1L, n1 * 2), rep(2L, n2))
+
+  res <- coxph_fast(time, event, group, control = 1, strata = strata)
+  expect_false(any(is.na(res)))
+})
+
+test_that("coxph_fast stops when strata length differs from time", {
+  expect_error(
+    coxph_fast(c(1, 2, 3), c(1, 0, 1), c(1, 1, 2), control = 1,
+              strata = c(1, 1)),
+    "same length"
+  )
+})

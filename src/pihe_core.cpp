@@ -15,7 +15,7 @@ struct PiheEvSummary {
 };
 
 // Forward declaration of the pointer-based implementation (defined below).
-void pihe_core_impl(const double*, const int*, const int*, int,
+void pihe_core_impl(const double*, const int*, const int*, const int*, int,
                     std::vector<PiheEvSummary>&, double*);
 
 //' Core PiHE hazard ratio computation (C++ backend)
@@ -35,12 +35,22 @@ void pihe_core_impl(const double*, const int*, const int*, int,
 //' input). Pass 2 walks the saved summaries once at the Pike anchor
 //' theta_0 to compute U_0, I_0, and J_0.
 //'
+//' When \code{strata_sorted} is supplied (non-empty), the data are assumed
+//' sorted by \code{(strata_sorted, time_sorted)}: Pass 1 resets the at-risk
+//' counts at each stratum boundary so that risk sets never cross strata,
+//' while \code{O_T}, \code{O_C}, \code{E_T}, \code{E_C} keep accumulating
+//' across strata, giving the pooled Pike anchor. Pass 2 is unaffected, since
+//' the saved per-event summaries are already stratum-local.
+//'
 //' @param time_sorted A numeric vector of pooled follow-up times sorted in
-//'   ascending order.
+//'   ascending order (within stratum, when \code{strata_sorted} is given).
 //' @param event_sorted An integer vector of event indicators (1 = event,
 //'   0 = censored), aligned with \code{time_sorted}.
 //' @param j_sorted An integer vector of group indicators (1 = treatment,
 //'   0 = control), aligned with \code{time_sorted}.
+//' @param strata_sorted An integer vector of stratum codes aligned with
+//'   \code{time_sorted}, assumed sorted so that rows sharing a stratum are
+//'   contiguous. Pass a zero-length vector to indicate no stratification.
 //'
 //' @return A numeric vector of length 4: \code{c(theta_0, U_0, I_0, J_0)}.
 //'   Returns a length-4 vector of \code{NA_real_} when the estimate cannot
@@ -51,13 +61,16 @@ void pihe_core_impl(const double*, const int*, const int*, int,
 NumericVector pihe_core(
     const NumericVector& time_sorted,
     const IntegerVector& event_sorted,
-    const IntegerVector& j_sorted
+    const IntegerVector& j_sorted,
+    const IntegerVector& strata_sorted
 ) {
   const int n = time_sorted.size();
   std::vector<PiheEvSummary> ev;
   double out[4];
+  const int* strata_ptr = strata_sorted.size() > 0 ? strata_sorted.begin()
+                                                    : nullptr;
   pihe_core_impl(time_sorted.begin(), event_sorted.begin(),
-                 j_sorted.begin(), n, ev, out);
+                 j_sorted.begin(), strata_ptr, n, ev, out);
   return NumericVector::create(out[0], out[1], out[2], out[3]);
 }
 
@@ -67,10 +80,16 @@ NumericVector pihe_core(
 // caller-supplied buffer ev, which is cleared on entry and reused across cells
 // to avoid a reserve(n) allocation per call. Algorithm identical to the
 // exported wrapper above.
+//
+// strata_sorted may be nullptr, meaning "no stratification" (a single
+// implicit stratum spanning the whole input) -- this collapses the outer
+// stratum-segmenting loop below to a single iteration over [0, n), reducing
+// to the original unstratified algorithm exactly.
 void pihe_core_impl(
     const double* time_sorted,
     const int* event_sorted,
     const int* j_sorted,
+    const int* strata_sorted,
     int n,
     std::vector<PiheEvSummary>& ev,
     double* out
@@ -78,58 +97,76 @@ void pihe_core_impl(
   out[0] = NA_REAL; out[1] = NA_REAL; out[2] = NA_REAL; out[3] = NA_REAL;
   if (n == 0) return;
 
-  // Initialize at-risk counts: count totals per group in one short loop
-  int n1 = 0, n0 = 0;
-  for (int k = 0; k < n; ++k) {
-    if (j_sorted[k] == 1) ++n1; else ++n0;
-  }
-
   ev.clear();
   if ((int) ev.capacity() < n) ev.reserve(n);
 
   double O_T = 0.0, O_C = 0.0, E_T = 0.0, E_C = 0.0;
 
-  // Pass 1: single left-to-right scan over pooled sorted data
-  int i = 0;
-  while (i < n) {
-    const double t = time_sorted[i];
+  // Outer loop: segment the (strata, time)-sorted input into contiguous
+  // per-stratum blocks. With strata_sorted == nullptr this runs exactly once
+  // over the full range [0, n), identical to the original single-stratum
+  // scan.
+  int strat_start = 0;
+  while (strat_start < n) {
+    int strat_end = strat_start;
+    if (strata_sorted == nullptr) {
+      strat_end = n;
+    } else {
+      const int s = strata_sorted[strat_start];
+      while (strat_end < n && strata_sorted[strat_end] == s) ++strat_end;
+    }
 
-    // Consume the tied block at time t
-    int d1 = 0, d0 = 0, c1 = 0, c0 = 0;
-    int j = i;
-    while (j < n && time_sorted[j] == t) {
-      if (j_sorted[j] == 1) {
-        ++c1;
-        if (event_sorted[j] == 1) ++d1;
-      } else {
-        ++c0;
-        if (event_sorted[j] == 1) ++d0;
+    // Stratum-local at-risk counts: totals per group within this segment
+    int n1 = 0, n0 = 0;
+    for (int k = strat_start; k < strat_end; ++k) {
+      if (j_sorted[k] == 1) ++n1; else ++n0;
+    }
+
+    // Pass 1: single left-to-right scan over this stratum's sorted data
+    int i = strat_start;
+    while (i < strat_end) {
+      const double t = time_sorted[i];
+
+      // Consume the tied block at time t, bounded to this stratum's segment
+      // so a tied block can never cross a stratum boundary
+      int d1 = 0, d0 = 0, c1 = 0, c0 = 0;
+      int j = i;
+      while (j < strat_end && time_sorted[j] == t) {
+        if (j_sorted[j] == 1) {
+          ++c1;
+          if (event_sorted[j] == 1) ++d1;
+        } else {
+          ++c0;
+          if (event_sorted[j] == 1) ++d0;
+        }
+        ++j;
       }
-      ++j;
+
+      const int d  = d1 + d0;
+      const int nj = n1 + n0;
+
+      if (d > 0 && nj > 0) {
+        const double dn1 = (double)n1;
+        const double dn0 = (double)n0;
+        const double dnj = (double)nj;
+        const double dd  = (double)d;
+        const double dd1 = (double)d1;
+
+        O_T += dd1;
+        O_C += dd - dd1;
+        E_T += dd * dn1 / dnj;
+        E_C += dd * dn0 / dnj;
+
+        ev.push_back(PiheEvSummary{dn1, dn0, dd1, dd});
+      }
+
+      // Decrement at-risk counts by block size
+      n1 -= c1;
+      n0 -= c0;
+      i   = j;
     }
 
-    const int d  = d1 + d0;
-    const int nj = n1 + n0;
-
-    if (d > 0 && nj > 0) {
-      const double dn1 = (double)n1;
-      const double dn0 = (double)n0;
-      const double dnj = (double)nj;
-      const double dd  = (double)d;
-      const double dd1 = (double)d1;
-
-      O_T += dd1;
-      O_C += dd - dd1;
-      E_T += dd * dn1 / dnj;
-      E_C += dd * dn0 / dnj;
-
-      ev.push_back(PiheEvSummary{dn1, dn0, dd1, dd});
-    }
-
-    // Decrement at-risk counts by block size
-    n1 -= c1;
-    n0 -= c0;
-    i   = j;
+    strat_start = strat_end;
   }
 
   if (O_T == 0.0 || O_C == 0.0 || E_T == 0.0 || E_C == 0.0) return;

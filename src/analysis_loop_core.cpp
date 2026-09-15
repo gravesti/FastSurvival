@@ -22,7 +22,7 @@ void stratified_weighted_logrank_core_impl(const double*, const int*,
                                            int, double, double, double,
                                            double*);
 struct PiheEvSummary { double n1k; double n0k; double OTk; double Ok; };
-void pihe_core_impl(const double*, const int*, const int*, int,
+void pihe_core_impl(const double*, const int*, const int*, const int*, int,
                     std::vector<PiheEvSummary>&, double*);
 struct RmstEvSummary { double cum_area; double g; };
 void rmst_core_impl(const double*, const double*, int, double,
@@ -411,7 +411,7 @@ List analysis_loop_core(
         // ---- Cox (PiHE) ---------------------------------------------------
         if (do_coxph && n_ev > 0 && both) {
           double r[4];
-          pihe_core_impl(t_sel.data(), ei_sel.data(), j_sel.data(), sz,
+          pihe_core_impl(t_sel.data(), ei_sel.data(), j_sel.data(), nullptr, sz,
                          pihe_ev, r);
           cox_mat(pos, 0) = r[0]; cox_mat(pos, 1) = r[1];
           cox_mat(pos, 2) = r[2]; cox_mat(pos, 3) = r[3];
